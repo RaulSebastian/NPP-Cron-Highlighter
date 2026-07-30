@@ -1,8 +1,39 @@
 # NppCronHighlighter
 
 A Notepad++ plugin that highlights CRON expressions (standard 5-field syntax,
-an optional trailing year field, and `@daily`/`@hourly`/... shorthands) in
-any open text file, using a squiggly indicator like a spell-checker.
+6/7-field Quartz(.NET) cron with seconds and the `L`/`W`/`#` specials, and
+`@daily`/`@hourly`/... shorthands) in any open text file, using a squiggly
+indicator like a spell-checker.
+
+## Supported syntax
+
+- **Standard 5-field Unix cron** — `minute hour day-of-month month day-of-week`.
+  ```
+  0 5 * * *              # 05:00 every day
+  */15 * * * *           # every 15 minutes
+  30 4 1 * *              # 04:30 on the 1st of every month
+  0 9-17 * * 1-5           # every hour, 9am-5pm, Mon-Fri
+  ```
+- **Quartz(.NET) 6/7-field cron** — `seconds minutes hours day-of-month month day-of-week [year]`.
+  Day-of-month and day-of-week are mutually exclusive, per Quartz semantics:
+  exactly one of the two must be `?`.
+  ```
+  0 0 12 * * ?             # 12:00:00 every day
+  0 15 10 ? * MON-FRI       # 10:15:00, weekdays only
+  0 0 0 1 1 ? *             # midnight on Jan 1, any year
+  0 0 0 15 * ?              # midnight on the 15th of every month
+  0 0 0 L * ?               # midnight on the last day of the month
+  0 0 0 LW * ?              # midnight on the last weekday of the month
+  0 0 0 15W * ?             # midnight on the weekday nearest the 15th
+  0 0 0 ? * 6L               # midnight on the last Friday of the month
+  0 0 0 ? * 6#3               # midnight on the 3rd Friday of the month
+  0 0 0 * * ? 2026-2030       # midnight every day, only in 2026-2030
+  ```
+- **Shorthands** — `@yearly`, `@annually`, `@monthly`, `@weekly`, `@daily`,
+  `@midnight`, `@hourly`, `@reboot`.
+
+Hover over a highlighted expression to see a human-readable translation
+(e.g. "At 10:15:00, on Monday through Friday").
 
 ## Layout
 
@@ -73,12 +104,16 @@ bottom → OK. Or from PowerShell: `Unblock-File .\NppCronHighlighter.dll`.
    0 5 * * * /usr/bin/backup.sh
    */15 * * * * echo hi
    @daily /usr/bin/cleanup
+   0 0 12 * * ?
+   0 15 10 ? * MON-FRI
+   0 15 10 ? * 6#3
    1 2 3 4 5
    just some random text
    ```
-   The first three lines should get an orange squiggly underline; the last
-   two should not (the 4th is a deliberate false-positive test — see
-   `CronDetector.cpp`'s `isLikelyCron` heuristic).
+   The first five lines should get an orange squiggly underline (the 4th and
+   5th are Quartz(.NET) 6-field cron; the 6th uses the `#` nth-weekday
+   special); the last two should not (the 7th is a deliberate false-positive
+   test — see `CronDetector.cpp`'s `isLikelyCron` heuristic).
 3. Edit a line to add/remove a cron expression and confirm the highlight
    updates live.
 4. Use **Plugins > CRON Highlighter > Toggle CRON Highlighting** to confirm

@@ -42,13 +42,20 @@ const char* kDowNames[] = {"Sunday", "Monday",   "Tuesday", "Wednesday",
                             "Thursday", "Friday", "Saturday"};
 
 // Resolves a bare token (no comma/range/step) to an integer, accepting
-// either a plain number or a recognized 3-letter month/day name.
-bool resolveToken(const std::string& token, bool isMonthOrDow, int* outValue) {
+// either a plain number or a recognized 3-letter month/day name. Named
+// tokens always resolve to a 0-based day-of-week (0=Sunday), matching
+// kDowNames' indexing. Numeric day-of-week tokens are 0-based in standard
+// cron (0 or 7=Sunday) but 1-based in Quartz (1=Sunday); pass
+// `dowIsOneBased=true` when parsing a Quartz day-of-week field so a numeric
+// token lands on the same 0-based convention as a named one.
+bool resolveToken(const std::string& token, bool isMonthOrDow, int* outValue,
+                   bool dowIsOneBased = false) {
     if (token.empty()) {
         return false;
     }
     if (std::isdigit(static_cast<unsigned char>(token[0]))) {
-        *outValue = std::atoi(token.c_str());
+        const int v = std::atoi(token.c_str());
+        *outValue = dowIsOneBased ? (((v - 1) % 7 + 7) % 7) : v;
         return true;
     }
     if (!isMonthOrDow) {
@@ -93,7 +100,8 @@ std::string joinWithAnd(const std::vector<std::string>& parts) {
 // Describes one field's value (the part of a comma-separated item before
 // any "/step"), given a function to render a resolved integer.
 std::string describeBase(const std::string& base, bool isMonthOrDow,
-                          const std::function<std::string(int)>& nameOf, bool* isWildcard) {
+                          const std::function<std::string(int)>& nameOf, bool* isWildcard,
+                          bool dowIsOneBased = false) {
     *isWildcard = (base == "*");
     if (*isWildcard) {
         return "";
@@ -101,23 +109,25 @@ std::string describeBase(const std::string& base, bool isMonthOrDow,
     const size_t dash = base.find('-');
     if (dash != std::string::npos) {
         int a = 0, b = 0;
-        if (resolveToken(base.substr(0, dash), isMonthOrDow, &a) &&
-            resolveToken(base.substr(dash + 1), isMonthOrDow, &b)) {
+        if (resolveToken(base.substr(0, dash), isMonthOrDow, &a, dowIsOneBased) &&
+            resolveToken(base.substr(dash + 1), isMonthOrDow, &b, dowIsOneBased)) {
             return nameOf(a) + " through " + nameOf(b);
         }
         return base;  // unparsable; show the raw token rather than guess
     }
     int v = 0;
-    if (resolveToken(base, isMonthOrDow, &v)) {
+    if (resolveToken(base, isMonthOrDow, &v, dowIsOneBased)) {
         return nameOf(v);
     }
     return base;
 }
 
 // Describes a whole field (comma list of base[/step] items). `unitPlural`
-// is used for step-only wildcards, e.g. "every 15 minutes".
+// is used for step-only wildcards, e.g. "every 15 minutes". Pass
+// `dowIsOneBased=true` for a Quartz day-of-week field (see resolveToken).
 std::string describeField(const std::string& field, const char* unitPlural, bool isMonthOrDow,
-                           const std::function<std::string(int)>& nameOf) {
+                           const std::function<std::string(int)>& nameOf,
+                           bool dowIsOneBased = false) {
     std::vector<std::string> items;
     std::stringstream ss(field);
     std::string item;
@@ -132,7 +142,7 @@ std::string describeField(const std::string& field, const char* unitPlural, bool
         const std::string step = (slash == std::string::npos) ? "" : raw.substr(slash + 1);
 
         bool wildcard = false;
-        std::string baseDesc = describeBase(base, isMonthOrDow, nameOf, &wildcard);
+        std::string baseDesc = describeBase(base, isMonthOrDow, nameOf, &wildcard, dowIsOneBased);
 
         if (!step.empty()) {
             if (wildcard) {
@@ -218,6 +228,150 @@ std::string describeShorthand(const std::string& expr) {
     return expr;
 }
 
+std::string ordinal(int n) {
+    const char* suffix = "th";
+    if (n % 100 < 11 || n % 100 > 13) {
+        switch (n % 10) {
+            case 1: suffix = "st"; break;
+            case 2: suffix = "nd"; break;
+            case 3: suffix = "rd"; break;
+        }
+    }
+    return std::to_string(n) + suffix;
+}
+
+// Quartz analogue of describeMinuteHour(), one level deeper (seconds are
+// the innermost unit, same relationship minutes have to hours there).
+std::string describeQuartzTime(const std::string& second, const std::string& minute,
+                                const std::string& hour) {
+    int secVal = 0, minVal = 0, hourVal = 0;
+    const bool secSingle = isSingleNumeric(second, &secVal);
+    const bool minSingle = isSingleNumeric(minute, &minVal);
+    const bool hourSingle = isSingleNumeric(hour, &hourVal);
+
+    if (secSingle && minSingle && hourSingle) {
+        char buf[24];
+        std::snprintf(buf, sizeof(buf), "At %02d:%02d:%02d", hourVal, minVal, secVal);
+        return buf;
+    }
+
+    const auto plainNumber = [](int v) { return std::to_string(v); };
+    const std::string secPhrase = describeField(second, "seconds", false, plainNumber);
+
+    std::string result;
+    const bool secIsEvery = secPhrase.rfind("every ", 0) == 0;
+    if (secPhrase.empty()) {
+        result = "At every second";
+    } else if (secIsEvery) {
+        result = "E" + secPhrase.substr(1);  // "every 30 seconds" -> "Every 30 seconds"
+    } else {
+        result = "At second " + secPhrase;
+    }
+
+    const std::string minHour = describeMinuteHour(minute, hour);
+    // describeMinuteHour() renders its own "At ..."/"Every ..." lead-in,
+    // which reads redundantly once seconds already introduced one; fold it
+    // in as a plain clause instead.
+    if (minHour != "Every minute") {
+        std::string clause = minHour;
+        for (const char* lead : {"At ", "Every "}) {
+            if (clause.rfind(lead, 0) == 0) {
+                clause = clause.substr(std::string(lead).size());
+                break;
+            }
+        }
+        result += ", " + clause;
+    }
+    return result;
+}
+
+// Day-of-month description for Quartz, including the L/W specials:
+// L ("last day"), L-N ("N days before the last day"), LW ("last weekday"),
+// NW ("weekday nearest day N").
+std::string describeQuartzDom(const std::string& dom) {
+    if (dom == "*") {
+        return "";
+    }
+    if (dom == "L") {
+        return "the last day of the month";
+    }
+    if (dom == "LW") {
+        return "the last weekday of the month";
+    }
+    if (dom.size() > 2 && dom[0] == 'L' && dom[1] == '-') {
+        return dom.substr(2) + " days before the last day of the month";
+    }
+    if (dom.size() > 1 && dom.back() == 'W' && std::isdigit(static_cast<unsigned char>(dom[0]))) {
+        return "the weekday nearest day " + dom.substr(0, dom.size() - 1);
+    }
+    return "day " +
+           describeField(dom, "days", false, [](int v) { return std::to_string(v); }) +
+           " of the month";
+}
+
+// Day-of-week description for Quartz, including the L/# specials: bare L
+// (= Saturday), N/name + L ("the last <day> of the month"), and N/name +
+// #M ("the Mth <day> of the month"). Numeric tokens are 1-based (1=Sunday)
+// per Quartz convention, so they go through resolveToken/describeField with
+// dowIsOneBased=true.
+std::string describeQuartzDow(const std::string& dow, const std::function<std::string(int)>& dowName) {
+    if (dow == "*") {
+        return "";
+    }
+    if (dow == "L") {
+        return dowName(6);  // bare L => Saturday
+    }
+    const size_t hash = dow.find('#');
+    if (hash != std::string::npos) {
+        int v = 0;
+        if (resolveToken(dow.substr(0, hash), true, &v, /*dowIsOneBased=*/true)) {
+            const int nth = std::atoi(dow.substr(hash + 1).c_str());
+            return ordinal(nth) + " " + dowName(v) + " of the month";
+        }
+        return dow;
+    }
+    if (dow.size() > 1 && dow.back() == 'L') {
+        int v = 0;
+        if (resolveToken(dow.substr(0, dow.size() - 1), true, &v, /*dowIsOneBased=*/true)) {
+            return "the last " + dowName(v) + " of the month";
+        }
+    }
+    return describeField(dow, "days", true, dowName, /*dowIsOneBased=*/true);
+}
+
+// Quartz(.NET) 6/7-field cron: "sec min hour dom month dow [year]". Unlike
+// standard cron, dom/dow are mutually exclusive (the grammar in
+// CronDetector.cpp guarantees exactly one of them is "?"), so there's no
+// "or" clause to build — just describe whichever one isn't "?".
+std::string describeQuartz(const std::vector<std::string>& fields) {
+    const std::string& second = fields[0];
+    const std::string& minute = fields[1];
+    const std::string& hour = fields[2];
+    const std::string& dom = fields[3];
+    const std::string& month = fields[4];
+    const std::string& dow = fields[5];
+    const std::string year = (fields.size() >= 7) ? fields[6] : "";
+
+    std::string result = describeQuartzTime(second, minute, hour);
+
+    const auto monthName = [](int v) { return (v >= 1 && v <= 12) ? kMonthNames[v - 1] : "?"; };
+    const auto dowName = [](int v) { return kDowNames[((v % 7) + 7) % 7]; };
+
+    const std::string dayDesc = (dom != "?") ? describeQuartzDom(dom) : describeQuartzDow(dow, dowName);
+    if (!dayDesc.empty()) {
+        result += ", on " + dayDesc;
+    }
+
+    const std::string monthDesc = (month == "*") ? "" : describeField(month, "months", true, monthName);
+    if (!monthDesc.empty()) {
+        result += ", in " + monthDesc;
+    }
+    if (!year.empty() && year != "*") {
+        result += ", only in " + year;
+    }
+    return result;
+}
+
 }  // namespace
 
 std::string describe(const std::string& cronExpr) {
@@ -230,7 +384,10 @@ std::string describe(const std::string& cronExpr) {
     }
 
     const std::vector<std::string> fields = splitFields(expr);
-    if (fields.size() < 5) {
+    if (fields.size() == 6 || fields.size() == 7) {
+        return describeQuartz(fields);  // sec min hour dom month dow [year]
+    }
+    if (fields.size() != 5) {
         return cronExpr;  // not a recognizable cron expression; show it verbatim
     }
 
@@ -239,7 +396,6 @@ std::string describe(const std::string& cronExpr) {
     const std::string& dom = fields[2];
     const std::string& month = fields[3];
     const std::string& dow = fields[4];
-    const std::string year = (fields.size() >= 6) ? fields[5] : "";
 
     std::string result = describeMinuteHour(minute, hour);
 
@@ -269,9 +425,6 @@ std::string describe(const std::string& cronExpr) {
 
     if (!monthDesc.empty()) {
         result += ", in " + monthDesc;
-    }
-    if (!year.empty() && year != "*") {
-        result += ", only in " + year;
     }
 
     return result;
