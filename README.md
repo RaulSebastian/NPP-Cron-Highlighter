@@ -158,9 +158,18 @@ plugin required as a dependency (unlike a PythonScript-based approach).
 - On `NPPN_READY`, the plugin calls `NPPM_ALLOCATEINDICATOR` to get an
   indicator ID that Notepad++ guarantees won't collide with other plugins,
   then styles it as an orange squiggle on both Scintilla views.
-- On `NPPN_BUFFERACTIVATED`, `NPPN_FILEOPENED`, and `SCN_MODIFIED` (insert/
-  delete), it re-scans the active view's full text and re-applies the
-  indicator over matched ranges.
+- On `NPPN_BUFFERACTIVATED` and `NPPN_FILEOPENED`, it rescans immediately.
+  On `SCN_MODIFIED` (insert/delete) and scroll (`SCN_UPDATEUI`), it debounces
+  through a 200ms timer (`scheduleRescan()`) instead of rescanning
+  synchronously, so fast typing or scrolling only triggers one rescan after
+  things settle.
+- Documents at/above `kLargeDocumentThresholdBytes` (200 KB) switch from a
+  full-document rescan to `highlightVisibleRange()`, which only scans the
+  currently visible lines (plus a small margin) — see the doc comment on
+  that function for the accuracy tradeoff this implies. A one-time
+  `MessageBox` warns the user the first time this kicks in for a given
+  buffer, suggesting they disable highlighting if they'd rather not have
+  either the tradeoff or the (much smaller, but nonzero) per-edit cost.
 - A "Toggle CRON Highlighting" entry is added to the Plugins menu.
 - On `SCN_DWELLSTART` (mouse rests over a matched expression), `CronTooltip`
   shows a call tip with the expression's description (`CronDescriber`) and
@@ -169,10 +178,12 @@ plugin required as a dependency (unlike a PythonScript-based approach).
 
 ## Known limitations / where the real complexity is
 
-- **Rescans the whole document on every keystroke.** Fine for typical files;
-  on very large files this should be debounced (e.g. a short timer, or only
-  rescanning the visible/changed range) rather than done synchronously in
-  `SCN_MODIFIED`.
+- **Visible-range scanning is a large-file fallback, not the default.**
+  Small/typical documents still get a full rescan on every debounced edit,
+  so their Document Map / minimap accurately reflects all matches, not just
+  the ones currently on screen. Only documents crossing the large-file
+  threshold trade that away for responsiveness — see the `highlightVisibleRange()`
+  doc comment in `CronHighlighter.h`.
 - **False positives are inherent.** `1 2 3 4 5` is technically a valid cron
   expression. `CronDetector` requires at least one `* / , -` character to
   reduce false hits on plain numeric text, but that's a heuristic, not a

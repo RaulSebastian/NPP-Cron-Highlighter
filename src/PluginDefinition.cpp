@@ -1,5 +1,8 @@
 #include "PluginDefinition.h"
 
+#include <cwchar>
+#include <vector>
+
 #include "CronHighlighter.h"
 #include "CronTooltip.h"
 
@@ -15,11 +18,78 @@ int g_indicatorId = -1;  // resolved via NPPM_ALLOCATEINDICATOR on NPPN_READY
 constexpr int kFuncCount = 3;
 FuncItem g_funcItems[kFuncCount];
 
+// Debounce: a burst of SCN_MODIFIED/scroll events resets this timer instead
+// of rescanning immediately, so fast typing or scrolling only triggers one
+// rescan after things settle.
+constexpr UINT kDebounceMs = 200;
+UINT_PTR g_debounceTimerId = 0;
+
+// Buffers we've already shown the "large document" warning for, so it only
+// appears once per document rather than on every activation/edit.
+std::vector<UINT_PTR> g_warnedBuffers;
+
 HWND activeScintilla() {
     int which = 0;
     ::SendMessage(g_nppData._nppHandle, NPPM_GETCURRENTSCINTILLA, 0,
                   reinterpret_cast<LPARAM>(&which));
     return which == 0 ? g_nppData._scintillaMainHandle : g_nppData._scintillaSecondHandle;
+}
+
+// Returns true (and records it) the first time this is called for the
+// currently active buffer; false on every subsequent call for that buffer.
+bool shouldWarnForCurrentBuffer() {
+    const auto bufferId =
+        static_cast<UINT_PTR>(::SendMessage(g_nppData._nppHandle, NPPM_GETCURRENTBUFFERID, 0, 0));
+    for (UINT_PTR id : g_warnedBuffers) {
+        if (id == bufferId) {
+            return false;
+        }
+    }
+    g_warnedBuffers.push_back(bufferId);
+    return true;
+}
+
+void warnIfLarge(HWND sci) {
+    if (!shouldWarnForCurrentBuffer()) {
+        return;
+    }
+    const auto lengthMb =
+        static_cast<double>(::SendMessage(sci, SCI_GETLENGTH, 0, 0)) / (1024.0 * 1024.0);
+    wchar_t msg[512];
+    swprintf_s(msg,
+                L"This document is large (%.1f MB), so CRON Highlighter is scanning only the "
+                L"visible portion of it to stay responsive — off-screen matches get "
+                L"highlighted as you scroll to them.\n\n"
+                L"If you notice lag while editing, use Plugins > CRON Highlighter > "
+                L"Toggle CRON Highlighting to turn it off for this file.",
+                lengthMb);
+    ::MessageBox(g_nppData._nppHandle, msg, TEXT("CRON Highlighter"), MB_OK | MB_ICONWARNING);
+}
+
+// Applies the enabled/disabled and large-vs-small-document dispatch to a
+// single view. rescanActiveView() and onToggleHighlighting() both funnel
+// through this so the two views (and the toggle command) can't drift out
+// of sync with each other's scanning strategy.
+void rescanView(HWND sci) {
+    if (g_indicatorId < 0 || !sci) {
+        return;
+    }
+    if (!g_enabled) {
+        clearHighlights(sci, g_indicatorId);
+        return;
+    }
+    if (isLargeDocument(sci)) {
+        warnIfLarge(sci);
+        highlightVisibleRange(sci, g_indicatorId);
+    } else {
+        highlightDocument(sci, g_indicatorId);
+    }
+}
+
+void CALLBACK onDebounceTimer(HWND, UINT, UINT_PTR id, DWORD) {
+    ::KillTimer(nullptr, id);
+    g_debounceTimerId = 0;
+    rescanActiveView();
 }
 }  // namespace
 
@@ -43,7 +113,12 @@ void pluginReady() {
     rescanActiveView();
 }
 
-void pluginCleanUp() {}
+void pluginCleanUp() {
+    if (g_debounceTimerId != 0) {
+        ::KillTimer(nullptr, g_debounceTimerId);
+        g_debounceTimerId = 0;
+    }
+}
 
 void commandMenuInit() {
     lstrcpy(g_funcItems[0]._itemName, TEXT("Toggle CRON Highlighting"));
@@ -64,18 +139,23 @@ FuncItem* getFuncsArray(int* nbF) {
     return g_funcItems;
 }
 
-void rescanActiveView() {
-    if (g_indicatorId < 0) {
+void rescanActiveView() { rescanView(activeScintilla()); }
+
+void scheduleRescan() {
+    if (g_debounceTimerId != 0) {
+        ::KillTimer(nullptr, g_debounceTimerId);
+    }
+    g_debounceTimerId = ::SetTimer(nullptr, 0, kDebounceMs, onDebounceTimer);
+}
+
+void onViewScrolled(HWND scintilla) {
+    if (!g_enabled || g_indicatorId < 0 || !scintilla) {
         return;
     }
-    HWND sci = activeScintilla();
-    if (!sci) {
-        return;
-    }
-    if (g_enabled) {
-        highlightDocument(sci, g_indicatorId);
-    } else {
-        clearHighlights(sci, g_indicatorId);
+    // Small documents are already fully highlighted regardless of scroll
+    // position; only the visible-range strategy needs to react to scrolling.
+    if (isLargeDocument(scintilla)) {
+        scheduleRescan();
     }
 }
 
@@ -86,18 +166,17 @@ void onToggleHighlighting() {
                   static_cast<WPARAM>(g_funcItems[0]._cmdID), g_enabled ? TRUE : FALSE);
 
     // Re-apply (or clear) highlighting in both views, not just the active one.
-    if (g_indicatorId >= 0) {
-        if (g_enabled) {
-            highlightDocument(g_nppData._scintillaMainHandle, g_indicatorId);
-            highlightDocument(g_nppData._scintillaSecondHandle, g_indicatorId);
-        } else {
-            clearHighlights(g_nppData._scintillaMainHandle, g_indicatorId);
-            clearHighlights(g_nppData._scintillaSecondHandle, g_indicatorId);
-        }
-    }
+    rescanView(g_nppData._scintillaMainHandle);
+    rescanView(g_nppData._scintillaSecondHandle);
 }
 
-void onRescanDocument() { rescanActiveView(); }
+void onRescanDocument() {
+    if (g_debounceTimerId != 0) {
+        ::KillTimer(nullptr, g_debounceTimerId);
+        g_debounceTimerId = 0;
+    }
+    rescanActiveView();
+}
 
 void onDwellStart(HWND scintilla, long long position) {
     if (!g_enabled) {

@@ -40,7 +40,12 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
             break;
         case SCN_MODIFIED:
             if (notifyCode->modificationType & (SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT)) {
-                CronNpp::rescanActiveView();
+                CronNpp::scheduleRescan();
+            }
+            break;
+        case SCN_UPDATEUI:
+            if (notifyCode->updated & (SC_UPDATE_V_SCROLL | SC_UPDATE_H_SCROLL)) {
+                CronNpp::onViewScrolled(reinterpret_cast<HWND>(notifyCode->nmhdr.hwndFrom));
             }
             break;
         case SCN_DWELLSTART:
