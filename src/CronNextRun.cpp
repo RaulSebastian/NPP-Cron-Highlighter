@@ -440,6 +440,16 @@ std::optional<std::time_t> nextRun(const std::string& cronExpr, std::time_t now)
 }
 
 std::string formatNextRun(std::time_t next, std::time_t now) {
+    const long long secondsAway = static_cast<long long>(std::difftime(next, now));
+    if (secondsAway < 3600) {
+        if (secondsAway < 60) {
+            const long long secs = std::max<long long>(1, secondsAway);
+            return "in " + std::to_string(secs) + (secs == 1 ? " second" : " seconds");
+        }
+        const long long minutes = secondsAway / 60;
+        return "in " + std::to_string(minutes) + (minutes == 1 ? " minute" : " minutes");
+    }
+
     const std::tm* nextTmPtr = std::localtime(&next);
     if (!nextTmPtr) {
         return "";

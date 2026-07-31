@@ -49,10 +49,10 @@ void showTooltipIfMatch(HWND scintilla, long long position) {
         const long long matchEnd = static_cast<long long>(m.start + m.length);
         if (relPos >= static_cast<long long>(m.start) && relPos < matchEnd) {
             const std::string cronText = lineText.substr(m.start, m.length);
-            std::string tooltipText = "Expression:\n" + describe(cronText);
+            std::string tooltipText = "Cron expression:\n" + describe(cronText);
             const std::time_t now = std::time(nullptr);
             if (const auto next = nextRun(cronText, now)) {
-                tooltipText += "\nNext:\n" + formatNextRun(*next, now);
+                tooltipText += "\n\nNext occurrence:\n" + formatNextRun(*next, now);
             }
             ::SendMessage(scintilla, SCI_CALLTIPSHOW,
                           static_cast<WPARAM>(lineStart + static_cast<Sci_Position>(m.start)),
