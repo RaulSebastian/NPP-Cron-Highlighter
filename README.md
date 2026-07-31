@@ -178,12 +178,6 @@ plugin required as a dependency (unlike a PythonScript-based approach).
 
 ## Known limitations / where the real complexity is
 
-- **Visible-range scanning is a large-file fallback, not the default.**
-  Small/typical documents still get a full rescan on every debounced edit,
-  so their Document Map / minimap accurately reflects all matches, not just
-  the ones currently on screen. Only documents crossing the large-file
-  threshold trade that away for responsiveness — see the `highlightVisibleRange()`
-  doc comment in `CronHighlighter.h`.
 - **False positives are inherent.** `1 2 3 4 5` is technically a valid cron
   expression. `CronDetector` requires at least one `* / , -` character to
   reduce false hits on plain numeric text, but that's a heuristic, not a
