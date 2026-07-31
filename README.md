@@ -47,7 +47,13 @@ Hover over a highlighted expression to see a human-readable translation
 - `src/PluginDefinition.*` — plugin lifecycle, menu commands, plugin state.
 - `src/CronDetector.*` — pure regex-based cron detection over a text blob,
   no Windows/Scintilla dependency (easy to unit test standalone).
+- `src/CronDescriber.*` — translates a cron expression into an English
+  description, same no-Windows-dependency design as `CronDetector`.
+- `src/CronNextRun.*` — computes a cron expression's next fire time and
+  formats it for display (e.g. "Tomorrow at 12:00:00"); also pure/testable.
 - `src/CronHighlighter.*` — talks to Scintilla to apply/clear the indicator.
+- `src/CronTooltip.*` — talks to Scintilla to show/hide the hover tooltip
+  built from `CronDescriber` + `CronNextRun`.
 - `src/dllmain.cpp` — DLL entry point and the exported NPP plugin ABI
   (`setInfo`, `getName`, `getFuncsArray`, `beNotified`, `messageProc`,
   `isUnicode`).
@@ -144,6 +150,10 @@ plugin required as a dependency (unlike a PythonScript-based approach).
   delete), it re-scans the active view's full text and re-applies the
   indicator over matched ranges.
 - A "Toggle CRON Highlighting" entry is added to the Plugins menu.
+- On `SCN_DWELLSTART` (mouse rests over a matched expression), `CronTooltip`
+  shows a call tip with the expression's description (`CronDescriber`) and
+  its next scheduled run time (`CronNextRun`), computed relative to the
+  system clock; `SCN_DWELLEND` hides it.
 
 ## Known limitations / where the real complexity is
 
@@ -160,9 +170,14 @@ plugin required as a dependency (unlike a PythonScript-based approach).
   bounds (e.g. minutes 0-59, months 1-12), so `99 99 * * *` would still
   highlight. Adding bounds checking is straightforward but was left out to
   keep the regex readable.
-- **No tooltip/human-readable translation** (e.g. "runs every day at
-  05:00") on hover — would need a `SCN_DWELLSTART`/`SCN_DWELLEND` handler
-  plus a small cron-to-English translator.
+- **Next-run computation is naive-calendar, not timezone/DST-aware.**
+  `CronNextRun` does its search in plain Gregorian arithmetic and only
+  converts to a real `time_t` for the final result, so it doesn't model DST
+  transitions the way a real scheduler running continuously would. It also
+  gives up after searching 8 years out (returns "no next run" for e.g. a
+  year field already in the past, or a day/month combination that can never
+  occur, like day 31 in February) and treats `@reboot` as having no
+  periodic schedule at all.
 - **Single indicator style for all matches** — no visual distinction
-  between a plain 5-field cron, a 6-field Quartz-style one, and a
-  shorthand like `@daily`.
+  between a plain 5-field cron, a Quartz-style one, and a shorthand like
+  `@daily`.

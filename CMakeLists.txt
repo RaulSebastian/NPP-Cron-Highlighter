@@ -20,6 +20,7 @@ add_library(NppCronHighlighter SHARED
     src/PluginDefinition.cpp
     src/CronDetector.cpp
     src/CronDescriber.cpp
+    src/CronNextRun.cpp
     src/CronHighlighter.cpp
     src/CronTooltip.cpp
 )
