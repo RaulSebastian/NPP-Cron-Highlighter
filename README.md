@@ -127,6 +127,18 @@ bottom → OK. Or from PowerShell: `Unblock-File .\NppCronHighlighter.dll`.
 5. Split the view (main + secondary Scintilla) and confirm highlighting
    works in both.
 
+## Continuous integration
+
+`.github/workflows/build-and-release.yml` builds the plugin on Windows for
+every push and pull request targeting `main`. Pushes to `main` (including a
+merged PR) additionally update a rolling GitHub release tagged `latest`,
+replacing its DLL/zip with the new build — there's always exactly one
+"latest" release, not one per commit. Pull request builds are check-only;
+no release is created until the PR merges. If release creation fails with a
+permissions error, check **Settings > Actions > General > Workflow
+permissions** is set to allow read/write (the workflow also requests
+`contents: write` explicitly, which is normally enough on its own).
+
 ## Installing / sharing across VMs
 
 Copy the built DLL into Notepad++'s plugin folder:
